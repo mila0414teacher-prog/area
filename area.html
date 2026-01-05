@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="zh-TW" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>種花高手</title>
+  <script src="/_sdk/data_sdk.js"></script>
+  <script src="/_sdk/element_sdk.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { box-sizing: border-box; }
+    @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+    @keyframes runAnimation { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+    .flower-icon{ animation: float 3s ease-in-out infinite; }
+    .runner{ animation: runAnimation 0.4s ease-in-out infinite; }
+    #gameCanvas{ border: 3px solid; }
+  </style>
+</head>
+
+<body class="h-full overflow-auto">
+  <div id="app" class="w-full h-full"></div>
+
+  <script>
+    const defaultConfig = {
+      background_color: "#FFF8DC",
+      surface_color: "#FFFFFF",
+      text_color: "#2C5530",
+      primary_action_color: "#4CAF50",
+      secondary_action_color: "#FF9800",
+      font_family: "sans-serif",
+      font_size: 16,
+      game_title: "🌸 種花高手 🌸",
+      start_button_text: "開始遊戲",
+      records_button_text: "遊戲紀錄"
+    };
+
+    let config = { ...defaultConfig };
+    let gameRecords = [];
+    let currentScreen = 'home';
+    let currentQuestion = null;
+    let score = 0;
+    let questionsAnswered = 0;
+    let gameInterval = null;
+    let runnerY = 150;
+    let flowers = [];
+    let runnerX = 50;
+
+    // ✅ 題目改成「你提供的五種範例圖」：底/高/虛線高/直角記號
+    const questions = [
+      {
+        // 範例圖 1：平行四邊形 底14cm 高10cm
+        text: "平行四邊形（如圖）：底 14 cm，高 10 cm，面積是多少？",
+        options: ["140 cm²", "70 cm²", "240 cm²", "14 cm²"],
+        correct: 0,
+        shape: "paraA",
+        dimensions: { base: 14, height: 10, unit: "cm" }
+      },
+      {
+        // 範例圖 2：斜放平行四邊形 底10m 高25m
+        text: "平行四邊形（如圖）：底 10 m，高 25 m，面積是多少？",
+        options: ["250 m²", "175 m²", "125 m²", "350 m²"],
+        correct: 0,
+        shape: "paraB",
+        dimensions: { base: 10, height: 25, unit: "m" }
+      },
+      {
+        // 範例圖 3：三角形 底16cm 高9cm
+        text: "三角形（如圖）：底 16 cm，高 9 cm，面積是多少？",
+        options: ["72 cm²", "144 cm²", "25 cm²", "80 cm²"],
+        correct: 0,
+        shape: "triA",
+        dimensions: { base: 16, height: 9, unit: "cm" }
+      },
+      {
+        // 範例圖 4：三角形 底6cm，對「右側邊」的高5cm（有直角記號）
+        text: "三角形（如圖）：底 6 cm，圖中虛線高為 5 cm，面積是多少？",
+        options: ["15 cm²", "30 cm²", "11 cm²", "24 cm²"],
+        correct: 0,
+        shape: "triB",
+        dimensions: { base: 6, height: 5, side: 8, unit: "cm" }
+      },
+      {
+        // 範例圖 5：直角三角形 5-12-13
+        text: "直角三角形（如圖）：兩直角邊為 12 cm、5 cm，面積是多少？",
+        options: ["30 cm²", "60 cm²", "78 cm²", "17 cm²"],
+        correct: 0,
+        shape: "rightTri",
+        dimensions: { a: 12, b: 5, c: 13, unit: "cm" }
+      }
+    ];
+
+    const dataHandler = {
+      onDataChanged(data) {
+        gameRecords = data.sort((a, b) => b.timestamp - a.timestamp);
+        if (currentScreen === 'records') render();
+      }
+    };
+
+    async function init() {
+      const initResult = await window.dataSdk.init(dataHandler);
+      if (!initResult.isOk) console.error("Failed to initialize data SDK");
+
+      await window.elementSdk.init({
+        defaultConfig,
+        onConfigChange: async (newConfig) => { config = newConfig; render(); },
+        mapToCapabilities: (config) => ({
+          recolorables: [
+            { get: () => config.background_color || defaultConfig.background_color,
+              set: (value) => { config.background_color = value; window.elementSdk.setConfig({ background_color: value }); } },
+            { get: () => config.surface_color || defaultConfig.surface_color,
+              set: (value) => { config.surface_color = value; window.elementSdk.setConfig({ surface_color: value }); } },
+            { get: () => config.text_color || defaultConfig.text_color,
+              set: (value) => { config.text_color = value; window.elementSdk.setConfig({ text_color: value }); } },
+            { get: () => config.primary_action_color || defaultConfig.primary_action_color,
+              set: (value) => { config.primary_action_color = value; window.elementSdk.setConfig({ primary_action_color: value }); } },
+            { get: () => config.secondary_action_color || defaultConfig.secondary_action_color,
+              set: (value) => { config.secondary_action_color = value; window.elementSdk.setConfig({ secondary_action_color: value }); } }
+          ],
+          borderables: [],
+          fontEditable: {
+            get: () => config.font_family || defaultConfig.font_family,
+            set: (value) => { config.font_family = value; window.elementSdk.setConfig({ font_family: value }); }
+          },
+          fontSizeable: {
+            get: () => config.font_size || defaultConfig.font_size,
+            set: (value) => { config.font_size = value; window.elementSdk.setConfig({ font_size: value }); }
+          }
+        }),
+        mapToEditPanelValues: (config) => new Map([
+          ["game_title", config.game_title || defaultConfig.game_title],
+          ["start_button_text", config.start_button_text || defaultConfig.start_button_text],
+          ["records_button_text", config.records_button_text || defaultConfig.records_button_text]
+        ])
+      });
+
+      if (window.editPanelSdk) {
+        window.editPanelSdk.onValuesChange((values) => {
+          const updates = {};
+          values.forEach((value, key) => updates[key] = value);
+          window.elementSdk.setConfig(updates);
+        });
+      }
+
+      render();
+    }
+
+    function render() {
+      const app = document.getElementById('app');
+      const customFont = config.font_family || defaultConfig.font_family;
+      const baseSize = config.font_size || defaultConfig.font_size;
+      const bgColor = config.background_color || defaultConfig.background_color;
+      const surfaceColor = config.surface_color || defaultConfig.surface_color;
+      const textColor = config.text_color || defaultConfig.text_color;
+      const primaryColor = config.primary_action_color || defaultConfig.primary_action_color;
+      const secondaryColor = config.secondary_action_color || defaultConfig.secondary_action_color;
+
+      app.style.backgroundColor = bgColor;
+      app.style.fontFamily = `${customFont}, Arial, sans-serif`;
+      app.style.color = textColor;
+
+      if (currentScreen === 'home') {
+        app.innerHTML = `
+          <div class="flex flex-col items-center justify-center h-full px-4">
+            <h1 style="font-size:${baseSize*2.5}px;color:${textColor};" class="font-bold mb-8 text-center">
+              ${config.game_title || defaultConfig.game_title}
+            </h1>
+            <div class="flower-icon mb-12 text-8xl">🌺🌻🌷</div>
+            <button id="startBtn" style="background-color:${primaryColor};font-size:${baseSize*1.2}px;color:#fff;"
+              class="px-8 py-4 rounded-lg font-bold shadow-lg hover:opacity-90 transition mb-4">
+              ${config.start_button_text || defaultConfig.start_button_text}
+            </button>
+            <button id="recordsBtn" style="background-color:${secondaryColor};font-size:${baseSize}px;color:#fff;"
+              class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition">
+              ${config.records_button_text || defaultConfig.records_button_text}
+            </button>
+          </div>
+        `;
+        document.getElementById('startBtn').onclick = startGame;
+        document.getElementById('recordsBtn').onclick = showRecords;
+
+      } else if (currentScreen === 'question') {
+        app.innerHTML = `
+          <div class="flex flex-col items-center justify-center h-full px-4">
+            <div style="background-color:${surfaceColor};color:${textColor};" class="rounded-lg shadow-xl p-8 max-w-2xl w-full">
+              <div class="mb-6 flex justify-between items-center">
+                <span style="font-size:${baseSize*1.1}px;">得分: ${score}</span>
+                <span style="font-size:${baseSize*1.1}px;">第 ${questionsAnswered + 1} 題</span>
+              </div>
+
+              <div class="mb-6 flex justify-center">
+                <svg id="questionShape" width="360" height="180"
+                     style="background-color:${bgColor};border-radius:12px;padding:10px;"></svg>
+              </div>
+
+              <h2 style="font-size:${baseSize*1.4}px;color:${textColor};" class="font-bold mb-6">
+                ${currentQuestion.text}
+              </h2>
+
+              <div class="space-y-3">
+                ${currentQuestion.options.map((option, index) => `
+                  <button class="option-btn w-full text-left px-6 py-4 rounded-lg font-semibold transition hover:opacity-80"
+                    style="background-color:${primaryColor};color:white;font-size:${baseSize}px;"
+                    data-index="${index}">
+                    ${option}
+                  </button>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+
+        drawShape('questionShape', currentQuestion.shape, currentQuestion.dimensions, primaryColor);
+
+        document.querySelectorAll('.option-btn').forEach(btn => {
+          btn.onclick = () => checkAnswer(parseInt(btn.dataset.index));
+        });
+
+      } else if (currentScreen === 'runner') {
+        app.innerHTML = `
+          <div class="flex flex-col items-center justify-center h-full px-4">
+            <div class="mb-4" style="font-size:${baseSize*1.2}px;color:${textColor};">
+              收集花朵！得分: ${score}
+            </div>
+
+            <div class="relative">
+              <canvas id="gameCanvas" width="600" height="300" style="border-color:${primaryColor};"></canvas>
+
+              <div class="mt-4">
+                <label style="font-size:${baseSize}px;color:${textColor};">控制上下：</label>
+                <input type="range" id="slider" min="0" max="250" value="150"
+                       style="width:300px;accent-color:${primaryColor};" class="ml-2">
+              </div>
+            </div>
+          </div>
+        `;
+        startRunnerGame();
+
+      } else if (currentScreen === 'records') {
+        app.innerHTML = `
+          <div class="flex flex-col h-full px-4 py-8">
+            <div class="max-w-2xl w-full mx-auto">
+              <h2 style="font-size:${baseSize*2}px;color:${textColor};" class="font-bold mb-6 text-center">遊戲紀錄</h2>
+
+              <div style="background-color:${surfaceColor};" class="rounded-lg shadow-xl p-6 mb-6">
+                ${gameRecords.length === 0 ? `
+                  <p style="font-size:${baseSize}px;color:${textColor};" class="text-center">還沒有紀錄，快去玩遊戲吧！</p>
+                ` : `
+                  <div class="space-y-3">
+                    ${gameRecords.map((record, index) => `
+                      <div style="background-color:${bgColor};border-color:${primaryColor};" class="p-4 rounded-lg border-2">
+                        <div class="flex justify-between items-center">
+                          <span style="font-size:${baseSize}px;color:${textColor};" class="font-bold">第 ${index + 1} 名</span>
+                          <span style="font-size:${baseSize*1.2}px;color:${primaryColor};" class="font-bold">${record.score} 分</span>
+                        </div>
+                        <div style="font-size:${baseSize*0.85}px;color:${textColor};" class="mt-2 opacity-75">
+                          答對 ${record.questionsAnswered} 題 | ${new Date(record.timestamp).toLocaleString('zh-TW')}
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                `}
+              </div>
+
+              <button id="backBtn" style="background-color:${secondaryColor};font-size:${baseSize}px;color:#fff;"
+                class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition w-full">
+                返回主畫面
+              </button>
+            </div>
+          </div>
+        `;
+        document.getElementById('backBtn').onclick = () => { currentScreen = 'home'; render(); };
+      }
+    }
+
+    function startGame() {
+      score = 0;
+      questionsAnswered = 0;
+      currentScreen = 'question';
+      loadQuestion();
+    }
+
+    function loadQuestion() {
+      currentQuestion = questions[Math.floor(Math.random() * questions.length)];
+      render();
+    }
+
+    // ---------- SVG drawing helpers ----------
+    function svgEl(tag) { return document.createElementNS('http://www.w3.org/2000/svg', tag); }
+
+    function addArrowMarkers(svg) {
+      if (svg.querySelector('#arrowStart')) return;
+      const defs = svgEl('defs');
+
+      const mk = (id, d) => {
+        const marker = svgEl('marker');
+        marker.setAttribute('id', id);
+        marker.setAttribute('markerWidth', '10');
+        marker.setAttribute('markerHeight', '10');
+        marker.setAttribute('refX', '5');
+        marker.setAttribute('refY', '5');
+        marker.setAttribute('orient', 'auto');
+        const p = svgEl('path');
+        p.setAttribute('d', d);
+        p.setAttribute('stroke', '#000');
+        p.setAttribute('stroke-width', '2');
+        p.setAttribute('fill', 'none');
+        marker.appendChild(p);
+        return marker;
+      };
+
+      defs.appendChild(mk('arrowStart', 'M 8 2 L 2 5 L 8 8'));
+      defs.appendChild(mk('arrowEnd', 'M 2 2 L 8 5 L 2 8'));
+      svg.appendChild(defs);
+    }
+
+    function drawRightAngle(svg, x, y, size=10) {
+      const p = svgEl('path');
+      p.setAttribute('d', `M ${x} ${y} l ${size} 0 l 0 ${size} l ${-size} 0 Z`);
+      p.setAttribute('fill', 'none');
+      p.setAttribute('stroke', '#000');
+      p.setAttribute('stroke-width', '2');
+      svg.appendChild(p);
+    }
+
+    function drawLabel(svg, x, y, text, size=26) {
+      const t = svgEl('text');
+      t.setAttribute('x', x);
+      t.setAttribute('y', y);
+      t.setAttribute('fill', '#000');
+      t.setAttribute('font-size', size);
+      t.setAttribute('font-weight', '700');
+      t.setAttribute('text-anchor', 'middle');
+      t.textContent = text;
+      svg.appendChild(t);
+    }
+
+    function drawShape(svgId, shape, dim, color) {
+      const svg = document.getElementById(svgId);
+      if (!svg) return;
+      svg.innerHTML = '';
+      addArrowMarkers(svg);
+
+      // 統一用淡色填滿（接近你給的圖）
+      const fill = color + '33';
+
+      // --- 1) 平行四邊形（範例圖1）：底在下，虛線高在中間 ---
+      if (shape === 'paraA') {
+        const base = dim.base, height = dim.height, unit = dim.unit;
+        const s = 10;
+        const basePx = base * s;
+        const heightPx = height * s;
+        const slant = 40;
+
+        // Parallelogram
+        const path = `M 60 ${130-heightPx} L ${60+slant+basePx} ${130-heightPx} L ${60+basePx} 130 L ${60-slant} 130 Z`;
+        const poly = svgEl('path');
+        poly.setAttribute('d', path);
+        poly.setAttribute('fill', fill);
+        poly.setAttribute('stroke', '#000');
+        poly.setAttribute('stroke-width', '3');
+        svg.appendChild(poly);
+
+        // Height dashed line in middle
+        const hx = 60 + basePx/2;
+        const hLine = svgEl('line');
+        hLine.setAttribute('x1', hx);
+        hLine.setAttribute('y1', 130-heightPx);
+        hLine.setAttribute('x2', hx);
+        hLine.setAttribute('y2', 130);
+        hLine.setAttribute('stroke', '#000');
+        hLine.setAttribute('stroke-width', '3');
+        hLine.setAttribute('stroke-dasharray', '6,6');
+        svg.appendChild(hLine);
+
+        // right angle marks (top & bottom)
+        drawRightAngle(svg, hx-12, 130-heightPx+2, 12);
+        drawRightAngle(svg, hx-12, 130-12, 12);
+
+        // Labels (像範例：只顯示 10cm / 14cm)
+        drawLabel(svg, hx-55, 85, `${height}${unit}`, 30);
+        drawLabel(svg, 60+basePx/2, 170, `${base}${unit}`, 34);
+      }
+
+      // --- 2) 平行四邊形（範例圖2）：高在左邊外側虛線，底在右下角 ---
+      else if (shape === 'paraB') {
+        const base = dim.base, height = dim.height, unit = dim.unit;
+        const s = 6; // 讓 25m 也放得下
+        const basePx = base * s;
+        const heightPx = height * s;
+
+        // long slanted parallelogram
+        const x0 = 120, y0 = 135;
+        const slant = 70;
+        const length = 220;
+
+        const path = `M ${x0} ${y0-heightPx} L ${x0+basePx} ${y0-heightPx} L ${x0+basePx+length} ${y0} L ${x0+length} ${y0} Z`;
+        const poly = svgEl('path');
+        poly.setAttribute('d', path);
+        poly.setAttribute('fill', fill);
+        poly.setAttribute('stroke', '#000');
+        poly.setAttribute('stroke-width', '3');
+        svg.appendChild(poly);
+
+        // left outside dashed height
+        const xH = x0 - 50;
+        const v = svgEl('line');
+        v.setAttribute('x1', xH);
+        v.setAttribute('y1', y0-heightPx);
+        v.setAttribute('x2', xH);
+        v.setAttribute('y2', y0);
+        v.setAttribute('stroke', '#000');
+        v.setAttribute('stroke-width', '3');
+        v.setAttribute('stroke-dasharray', '6,6');
+        svg.appendChild(v);
+
+        // bottom dashed to show right angle corner (like the big dashed L)
+        const h = svgEl('line');
+        h.setAttribute('x1', xH);
+        h.setAttribute('y1', y0);
+        h.setAttribute('x2', x0+length);
+        h.setAttribute('y2', y0);
+        h.setAttribute('stroke', '#000');
+        h.setAttribute('stroke-width', '3');
+        h.setAttribute('stroke-dasharray', '6,6');
+        svg.appendChild(h);
+
+        drawRightAngle(svg, xH, y0-12, 12);
+
+        // labels
+        drawLabel(svg, xH-35, y0-heightPx/2+10, `${height}${unit}`, 32);
+        drawLabel(svg, x0+basePx+length-15, y0+35, `${base}${unit}`, 32);
+      }
+
+      // --- 3) 三角形（範例圖3）：底16，高9（中間虛線高） ---
+      else if (shape === 'triA') {
+        const base = dim.base, height = dim.height, unit = dim.unit;
+        const s = 12;
+        const basePx = base * s;
+        const heightPx = height * s;
+
+        const A = {x: 60, y: 140};
+        const B = {x: 60+basePx, y: 140};
+        const C = {x: 60+basePx/2, y: 140-heightPx};
+
+        const tri = svgEl('path');
+        tri.setAttribute('d', `M ${A.x} ${A.y} L ${C.x} ${C.y} L ${B.x} ${B.y} Z`);
+        tri.setAttribute('fill', '#f5d9b3'); // 範例偏米色
+        tri.setAttribute('stroke', '#000');
+        tri.setAttribute('stroke-width', '3');
+        svg.appendChild(tri);
+
+        // altitude dashed
+        const alt = svgEl('line');
+        alt.setAttribute('x1', C.x);
+        alt.setAttribute('y1', C.y);
+        alt.setAttribute('x2', C.x);
+        alt.setAttribute('y2', A.y);
+        alt.setAttribute('stroke', '#000');
+        alt.setAttribute('stroke-width', '3');
+        alt.setAttribute('stroke-dasharray', '6,6');
+        svg.appendChild(alt);
+
+        drawRightAngle(svg, C.x-12, A.y-12, 12);
+
+        drawLabel(svg, C.x-55, (C.y+A.y)/2+10, `${height}${unit}`, 32);
+        drawLabel(svg, (A.x+B.x)/2, A.y+35, `${base}${unit}`, 34);
+      }
+
+      // --- 4) 三角形（範例圖4）：底6，右側邊標8，從左下作垂線高5到右側邊 ---
+      else if (shape === 'triB') {
+        const base = dim.base, height = dim.height, side = dim.side, unit = dim.unit;
+
+        // 取一組好看的點
+        const A = {x: 80, y: 150};  // 左下
+        const B = {x: 220, y: 150}; // 右下 (底)
+        const C = {x: 120, y: 30};  // 上方偏左
+
+        // triangle
+        const tri = svgEl('path');
+        tri.setAttribute('d', `M ${A.x} ${A.y} L ${C.x} ${C.y} L ${B.x} ${B.y} Z`);
+        tri.setAttribute('fill', fill);
+        tri.setAttribute('stroke', '#000');
+        tri.setAttribute('stroke-width', '3');
+        svg.appendChild(tri);
+
+        // altitude from A to side CB
+        // 計算 A 到直線 CB 的垂足
+        const vx = B.x - C.x, vy = B.y - C.y;
+        const wx = A.x - C.x, wy = A.y - C.y;
+        const t = (wx*vx + wy*vy) / (vx*vx + vy*vy);
+        const P = {x: C.x + t*vx, y: C.y + t*vy};
+
+        const alt = svgEl('line');
+        alt.setAttribute('x1', A.x);
+        alt.setAttribute('y1', A.y);
+        alt.setAttribute('x2', P.x);
+        alt.setAttribute('y2', P.y);
+        alt.setAttribute('stroke', '#000');
+        alt.setAttribute('stroke-width', '3');
+        alt.setAttribute('stroke-dasharray', '6,6');
+        svg.appendChild(alt);
+
+        // right angle mark at P (大概畫在 P 周圍)
+        drawRightAngle(svg, P.x-10, P.y-10, 10);
+
+        // labels: 底 6cm 在下，側邊 8cm 在右側，高 5cm 靠虛線
+        drawLabel(svg, (A.x+B.x)/2, A.y+35, `${base}${unit}`, 34);
+
+        // 右側邊中點
+        const midCB = {x:(C.x+B.x)/2, y:(C.y+B.y)/2};
+        drawLabel(svg, midCB.x+55, midCB.y+10, `${side}${unit}`, 32);
+
+        // 高標示
+        const midAP = {x:(A.x+P.x)/2, y:(A.y+P.y)/2};
+        drawLabel(svg, midAP.x-45, midAP.y+10, `${height}${unit}`, 32);
+      }
+
+      // --- 5) 直角三角形（範例圖5）：5-12-13，畫直角記號 ---
+      else if (shape === 'rightTri') {
+        const a = dim.a, b = dim.b, c = dim.c, unit = dim.unit;
+        const s = 10;
+
+        // 直角在 O
+        const O = {x: 90, y: 150};
+        const P = {x: O.x + b*s, y: O.y};      // 水平邊 b
+        const Q = {x: O.x, y: O.y - a*s};      // 垂直邊 a
+
+        const tri = svgEl('path');
+        tri.setAttribute('d', `M ${Q.x} ${Q.y} L ${O.x} ${O.y} L ${P.x} ${P.y} Z`);
+        tri.setAttribute('fill', '#cfe9f7'); // 範例偏藍
+        tri.setAttribute('stroke', '#000');
+        tri.setAttribute('stroke-width', '3');
+        svg.appendChild(tri);
+
+        drawRightAngle(svg, O.x, O.y-12, 12);
+
+        // labels: a(12) 在左邊，b(5) 在下邊，c(13) 在斜邊
+        drawLabel(svg, O.x-55, (O.y+Q.y)/2+10, `${a}${unit}`, 32);
+        drawLabel(svg, (O.x+P.x)/2, O.y+35, `${b}${unit}`, 32);
+
+        const midQP = {x:(Q.x+P.x)/2, y:(Q.y+P.y)/2};
+        drawLabel(svg, midQP.x+40, midQP.y-5, `${c}${unit}`, 32);
+      }
+
+      // fallback
+      else {
+        const t = svgEl('text');
+        t.setAttribute('x', 180);
+        t.setAttribute('y', 90);
+        t.setAttribute('text-anchor', 'middle');
+        t.setAttribute('font-size', '18');
+        t.textContent = '（此題型尚未設定）';
+        svg.appendChild(t);
+      }
+    }
+
+    function checkAnswer(selectedIndex) {
+      if (selectedIndex === currentQuestion.correct) {
+        score += 10;
+        questionsAnswered++;
+        currentScreen = 'runner';
+        render();
+      } else {
+        endGame();
+      }
+    }
+
+    function startRunnerGame() {
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      const slider = document.getElementById('slider');
+
+      runnerY = 150;
+      flowers = [];
+      let gameTime = 0;
+      const gameDuration = 5000;
+
+      slider.oninput = (e) => runnerY = parseInt(e.target.value);
+
+      function spawnFlower() {
+        flowers.push({ x: canvas.width, y: Math.random() * (canvas.height - 30), collected: false });
+      }
+
+      spawnFlower();
+
+      gameInterval = setInterval(() => {
+        gameTime += 50;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = config.text_color || defaultConfig.text_color;
+        ctx.font = '30px Arial';
+        ctx.fillText('🏃', runnerX, runnerY);
+
+        flowers = flowers.filter(flower => {
+          if (!flower.collected) {
+            flower.x -= 5;
+
+            if (Math.abs(flower.x - runnerX) < 30 && Math.abs(flower.y - runnerY) < 30) {
+              flower.collected = true;
+              score += 5;
+              return false;
+            }
+
+            if (flower.x > -30) {
+              ctx.fillText('🌸', flower.x, flower.y);
+              return true;
+            }
+          }
+          return false;
+        });
+
+        if (Math.random() < 0.03) spawnFlower();
+
+        if (gameTime >= gameDuration) {
+          clearInterval(gameInterval);
+          currentScreen = 'question';
+          loadQuestion();
+        }
+      }, 50);
+    }
+
+    async function endGame() {
+      if (gameInterval) clearInterval(gameInterval);
+
+      if (gameRecords.length >= 999) {
+        alert("已達到最多 999 筆紀錄上限！");
+        currentScreen = 'home';
+        render();
+        return;
+      }
+
+      const record = {
+        id: Date.now().toString(),
+        score,
+        timestamp: Date.now(),
+        questionsAnswered
+      };
+
+      const createResult = await window.dataSdk.create(record);
+
+      if (createResult.isOk) {
+        currentScreen = 'records';
+        render();
+      } else {
+        console.error("Failed to save record");
+        currentScreen = 'home';
+        render();
+      }
+    }
+
+    function showRecords() { currentScreen = 'records'; render(); }
+
+    init();
+  </script>
+</body>
+</html>
