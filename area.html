@@ -18,9 +18,9 @@
 
   <script>
     // =====================
-    // ✅ 不用 SDK：改用 localStorage
+    // ✅ localStorage (紀錄)
     // =====================
-    const STORAGE_KEY = "flower_game_records_v1";
+    const STORAGE_KEY = "flower_game_records_v3";
     function loadRecords() {
       try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
       catch { return []; }
@@ -28,14 +28,13 @@
     function saveRecord(record) {
       const records = loadRecords();
       records.push(record);
-      // 只保留前 999 筆（新到舊）
       records.sort((a,b)=>b.timestamp-a.timestamp);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(records.slice(0, 999)));
       return records.slice(0, 999);
     }
 
     // =====================
-    // ✅ 設定
+    // ✅ UI 設定
     // =====================
     const config = {
       background_color: "#FFF8DC",
@@ -60,44 +59,205 @@
     let runnerX = 50;
     let flowers = [];
 
-    // ✅ 五張範例題型（題目+選項+圖）
-    const questions = [
-      {
-        text: "平行四邊形（如圖）：底 14 cm，高 10 cm，面積是多少？",
-        options: ["140 cm²", "70 cm²", "240 cm²", "14 cm²"],
-        correct: 0,
-        shape: "paraA",
-        dimensions: { base: 14, height: 10, unit: "cm" }
-      },
-      {
-        text: "平行四邊形（如圖）：底 10 m，高 25 m，面積是多少？",
-        options: ["250 m²", "175 m²", "125 m²", "350 m²"],
-        correct: 0,
-        shape: "paraB",
-        dimensions: { base: 10, height: 25, unit: "m" }
-      },
-      {
-        text: "三角形（如圖）：底 16 cm，高 9 cm，面積是多少？",
-        options: ["72 cm²", "144 cm²", "25 cm²", "80 cm²"],
-        correct: 0,
-        shape: "triA",
-        dimensions: { base: 16, height: 9, unit: "cm" }
-      },
-      {
-        text: "三角形（如圖）：底 6 cm，圖中虛線高為 5 cm，面積是多少？",
-        options: ["15 cm²", "30 cm²", "11 cm²", "24 cm²"],
-        correct: 0,
-        shape: "triB",
-        dimensions: { base: 6, height: 5, side: 8, unit: "cm" }
-      },
-      {
-        text: "直角三角形（如圖）：兩直角邊為 12 cm、5 cm，面積是多少？",
-        options: ["30 cm²", "60 cm²", "78 cm²", "17 cm²"],
-        correct: 0,
-        shape: "rightTri",
-        dimensions: { a: 12, b: 5, c: 13, unit: "cm" }
+    // =====================
+    // ✅ 工具：隨機/格式
+    // =====================
+    function randInt(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+    function shuffle(arr){
+      const a = [...arr];
+      for (let i=a.length-1;i>0;i--){
+        const j = Math.floor(Math.random()*(i+1));
+        [a[i],a[j]]=[a[j],a[i]];
       }
-    ];
+      return a;
+    }
+    function uniqueNumbers(arr){
+      return [...new Set(arr)];
+    }
+    function unitSq(unit){ return unit + "²"; }
+
+    // =====================
+    // ✅ 自動產生選項（1正確 + 3干擾）
+    // 每個選項一行寫完算式
+    // =====================
+    function buildOptions({ type, base, height, unit, a, b }) {
+      // 回傳 { options: [string...], correctIndex }
+      // type: "parallelogram" | "triangle" | "rightTriangle"
+      // parallelogram: base,height
+      // triangle: base,height
+      // rightTriangle: a,b (兩直角邊) => base=b height=a (概念上)
+
+      let correctValue = 0;
+      let correctExpr = "";
+
+      if (type === "parallelogram") {
+        correctValue = base * height;
+        correctExpr = `${base} × ${height} = ${correctValue} ${unitSq(unit)}`;
+      } else if (type === "triangle") {
+        correctValue = (base * height) / 2;
+        correctExpr = `${base} × ${height} ÷ 2 = ${correctValue} ${unitSq(unit)}`;
+      } else if (type === "rightTriangle") {
+        correctValue = (a * b) / 2;
+        correctExpr = `${a} × ${b} ÷ 2 = ${correctValue} ${unitSq(unit)}`;
+      } else {
+        correctValue = base * height;
+        correctExpr = `${base} × ${height} = ${correctValue} ${unitSq(unit)}`;
+      }
+
+      // 干擾值（常見錯誤）
+      const wrongValues = [];
+      if (type === "parallelogram") {
+        wrongValues.push((base * height) / 2);      // 多除2
+        wrongValues.push(base + height);            // 加法
+        wrongValues.push((base + height) * height); // 亂用（上底+下底）×高
+      } else if (type === "triangle" || type === "rightTriangle") {
+        // 忘記 ÷2
+        const prod = (type === "rightTriangle") ? (a*b) : (base*height);
+        wrongValues.push(prod);
+        wrongValues.push(base + height);                // 加法（或 a+b）
+        wrongValues.push(((base + height) * height) / 2); // 亂用梯形
+        if (type === "rightTriangle") {
+          wrongValues[1] = a + b;
+          wrongValues[2] = ((a + b) * b) / 2;
+        }
+      }
+
+      // 再補一些微調干擾，確保夠用且不同
+      wrongValues.push(correctValue + randInt(1, 6) * 2);
+      wrongValues.push(Math.max(1, correctValue - randInt(1, 6) * 2));
+
+      // 去重、去掉正確
+      const cleanedWrong = uniqueNumbers(
+        wrongValues
+          .map(v => (Number.isFinite(v) ? Math.round(v*100)/100 : v))
+          .filter(v => v !== correctValue && v > 0)
+      );
+
+      // 取前三個干擾
+      const chosenWrong = cleanedWrong.slice(0, 3);
+
+      // 若不足三個，再補一些「看起來合理」的數
+      while (chosenWrong.length < 3) {
+        const v = correctValue + randInt(2, 20);
+        if (v !== correctValue && !chosenWrong.includes(v)) chosenWrong.push(v);
+      }
+
+      // 把干擾值轉成一行算式（保持同一種格式）
+      const wrongExprs = chosenWrong.map(v => {
+        if (type === "parallelogram") {
+          // 常見干擾形式混搭
+          const forms = [
+            `${base} × ${height} ÷ 2 = ${v} ${unitSq(unit)}`,
+            `${base} + ${height} = ${v} ${unitSq(unit)}`,
+            `(${base} + ${height}) × ${height} = ${v} ${unitSq(unit)}`
+          ];
+          return forms[chosenWrong.indexOf(v) % forms.length];
+        }
+        if (type === "triangle") {
+          const forms = [
+            `${base} × ${height} = ${v} ${unitSq(unit)}`,
+            `${base} + ${height} = ${v} ${unitSq(unit)}`,
+            `(${base} + ${height}) × ${height} ÷ 2 = ${v} ${unitSq(unit)}`
+          ];
+          return forms[chosenWrong.indexOf(v) % forms.length];
+        }
+        // rightTriangle
+        const forms = [
+          `${a} × ${b} = ${v} ${unitSq(unit)}`,
+          `${a} + ${b} = ${v} ${unitSq(unit)}`,
+          `(${a} + ${b}) × ${b} ÷ 2 = ${v} ${unitSq(unit)}`
+        ];
+        return forms[chosenWrong.indexOf(v) % forms.length];
+      });
+
+      // 合併後洗牌，找正確位置
+      const all = shuffle([correctExpr, ...wrongExprs]);
+      return { options: all, correctIndex: all.indexOf(correctExpr) };
+    }
+
+    // =====================
+    // ✅ 出題器：隨機底高、隨機題型
+    // - 三角形確保 base*height 是偶數，面積整數
+    // =====================
+    function generateQuestion() {
+      const pool = ["paraA", "paraB", "triA", "triB", "rightTri"];
+      const shape = pool[randInt(0, pool.length - 1)];
+
+      // 單位：cm / m（可依你需求固定）
+      const unit = (shape === "paraB") ? "m" : "cm";
+
+      if (shape === "paraA") {
+        const base = randInt(6, 18);
+        const height = randInt(4, 14);
+        const { options, correctIndex } = buildOptions({ type:"parallelogram", base, height, unit });
+        return {
+          shape,
+          text: "平行四邊形（如圖）：求面積",
+          dimensions: { base, height, unit },
+          options,
+          correct: correctIndex
+        };
+      }
+
+      if (shape === "paraB") {
+        const base = randInt(6, 20);
+        const height = randInt(10, 30);
+        const { options, correctIndex } = buildOptions({ type:"parallelogram", base, height, unit });
+        return {
+          shape,
+          text: "平行四邊形（如圖）：求面積",
+          dimensions: { base, height, unit },
+          options,
+          correct: correctIndex
+        };
+      }
+
+      if (shape === "triA") {
+        let base = randInt(6, 20);
+        let height = randInt(4, 18);
+        // 確保 base*height 偶數
+        if ((base * height) % 2 !== 0) base += 1;
+        const { options, correctIndex } = buildOptions({ type:"triangle", base, height, unit });
+        return {
+          shape,
+          text: "三角形（如圖）：求面積",
+          dimensions: { base, height, unit },
+          options,
+          correct: correctIndex
+        };
+      }
+
+      if (shape === "triB") {
+        let base = randInt(6, 16);
+        let height = randInt(4, 14);
+        if ((base * height) % 2 !== 0) height += 1;
+        const side = randInt(7, 18); // 只是裝飾用（像範例 8cm）
+        const { options, correctIndex } = buildOptions({ type:"triangle", base, height, unit });
+        return {
+          shape,
+          text: "三角形（如圖）：求面積",
+          dimensions: { base, height, side, unit },
+          options,
+          correct: correctIndex
+        };
+      }
+
+      // rightTri
+      let a = randInt(6, 20);
+      let b = randInt(4, 16);
+      if ((a * b) % 2 !== 0) a += 1;
+      const c = Math.round(Math.sqrt(a*a + b*b)); // 裝飾顯示（不強求畢氏整數）
+      const { options, correctIndex } = buildOptions({ type:"rightTriangle", a, b, unit, base:b, height:a });
+      return {
+        shape,
+        text: "直角三角形（如圖）：求面積",
+        dimensions: { a, b, c, unit },
+        options,
+        correct: correctIndex
+      };
+    }
 
     // =====================
     // ✅ UI render
@@ -151,8 +311,9 @@
               </div>
 
               <div class="mb-6 flex justify-center">
-                <svg id="questionShape" width="360" height="180"
-                     style="background:${bgColor};border-radius:12px;padding:10px;"></svg>
+                <svg id="questionShape"
+                     width="520" height="260" viewBox="0 0 360 180"
+                     style="background:${bgColor};border-radius:16px;padding:12px;"></svg>
               </div>
 
               <h2 class="font-bold mb-6" style="font-size:${baseSize*1.4}px;">
@@ -213,7 +374,7 @@
                 ` : `
                   <div class="space-y-3">
                     ${records.map((r,idx)=>`
-                      <div class="p-4 rounded-lg border-2" style="background:${bgColor};border-color:${primaryColor};">
+                      <div class="p-4 rounded-lg border-2" style="background:${config.background_color};border-color:${primaryColor};">
                         <div class="flex justify-between items-center">
                           <span class="font-bold" style="font-size:${baseSize}px;">第 ${idx+1} 名</span>
                           <span class="font-bold" style="font-size:${baseSize*1.2}px;color:${primaryColor};">${r.score} 分</span>
@@ -254,40 +415,14 @@
     }
 
     function loadQuestion(){
-      currentQuestion = questions[Math.floor(Math.random()*questions.length)];
+      currentQuestion = generateQuestion(); // ✅ 每次都重新隨機出題
       render();
     }
 
     // =====================
-    // ✅ 圖形 SVG：照你五張範例風格
+    // ✅ SVG 繪圖：圖上寫「底=」「高=」
     // =====================
     function svgEl(tag){ return document.createElementNS("http://www.w3.org/2000/svg", tag); }
-
-    function addArrowMarkers(svg){
-      if (svg.querySelector("#arrowStart")) return;
-      const defs = svgEl("defs");
-
-      const mk = (id, d)=>{
-        const m = svgEl("marker");
-        m.setAttribute("id", id);
-        m.setAttribute("markerWidth","10");
-        m.setAttribute("markerHeight","10");
-        m.setAttribute("refX","5");
-        m.setAttribute("refY","5");
-        m.setAttribute("orient","auto");
-        const p = svgEl("path");
-        p.setAttribute("d", d);
-        p.setAttribute("stroke","#000");
-        p.setAttribute("stroke-width","2");
-        p.setAttribute("fill","none");
-        m.appendChild(p);
-        return m;
-      };
-
-      defs.appendChild(mk("arrowStart","M 8 2 L 2 5 L 8 8"));
-      defs.appendChild(mk("arrowEnd","M 2 2 L 8 5 L 2 8"));
-      svg.appendChild(defs);
-    }
 
     function drawRightAngle(svg, x, y, size=10){
       const p = svgEl("path");
@@ -298,13 +433,13 @@
       svg.appendChild(p);
     }
 
-    function drawLabel(svg, x, y, text, size=30){
+    function drawLabel(svg, x, y, text, size=22){
       const t = svgEl("text");
       t.setAttribute("x", x);
       t.setAttribute("y", y);
       t.setAttribute("fill","#000");
       t.setAttribute("font-size", size);
-      t.setAttribute("font-weight","700");
+      t.setAttribute("font-weight","800");
       t.setAttribute("text-anchor","middle");
       t.textContent = text;
       svg.appendChild(t);
@@ -314,15 +449,19 @@
       const svg = document.getElementById(svgId);
       if(!svg) return;
       svg.innerHTML = "";
-      addArrowMarkers(svg);
 
       const fillGreen = color + "33";
       const fillBeige = "#f5d9b3";
       const fillBlue  = "#cfe9f7";
 
+      // 平行四邊形(版本1)
       if(shape==="paraA"){
-        const s=10, basePx=dim.base*s, heightPx=dim.height*s, slant=40;
-        const path = `M 60 ${130-heightPx} L ${60+slant+basePx} ${130-heightPx} L ${60+basePx} 130 L ${60-slant} 130 Z`;
+        const s = 9;
+        const basePx = dim.base * s;
+        const heightPx = dim.height * s;
+        const slant = 40;
+
+        const path = `M 70 ${135-heightPx} L ${70+slant+basePx} ${135-heightPx} L ${70+basePx} 135 L ${70-slant} 135 Z`;
         const poly = svgEl("path");
         poly.setAttribute("d", path);
         poly.setAttribute("fill", fillGreen);
@@ -330,26 +469,30 @@
         poly.setAttribute("stroke-width","3");
         svg.appendChild(poly);
 
-        const hx = 60 + basePx/2;
+        const hx = 70 + basePx/2;
         const hLine = svgEl("line");
-        hLine.setAttribute("x1",hx); hLine.setAttribute("y1",130-heightPx);
-        hLine.setAttribute("x2",hx); hLine.setAttribute("y2",130);
+        hLine.setAttribute("x1",hx); hLine.setAttribute("y1",135-heightPx);
+        hLine.setAttribute("x2",hx); hLine.setAttribute("y2",135);
         hLine.setAttribute("stroke","#000");
         hLine.setAttribute("stroke-width","3");
         hLine.setAttribute("stroke-dasharray","6,6");
         svg.appendChild(hLine);
 
-        drawRightAngle(svg, hx-12, 130-heightPx+2, 12);
-        drawRightAngle(svg, hx-12, 130-12, 12);
+        drawRightAngle(svg, hx-12, 135-heightPx+2, 12);
+        drawRightAngle(svg, hx-12, 135-12, 12);
 
-        drawLabel(svg, hx-55, 85, `${dim.height}${dim.unit}`, 30);
-        drawLabel(svg, 60+basePx/2, 170, `${dim.base}${dim.unit}`, 34);
+        drawLabel(svg, hx-80, 92, `高 = ${dim.height}${dim.unit}`, 22);
+        drawLabel(svg, 70+basePx/2, 173, `底 = ${dim.base}${dim.unit}`, 22);
         return;
       }
 
+      // 平行四邊形(版本2：長斜條)
       if(shape==="paraB"){
-        const s=6, basePx=dim.base*s, heightPx=dim.height*s;
-        const x0=120, y0=135, length=220;
+        const s = 6;
+        const basePx = dim.base * s;
+        const heightPx = dim.height * s;
+        const x0 = 110, y0 = 135, length = 220;
+
         const path = `M ${x0} ${y0-heightPx} L ${x0+basePx} ${y0-heightPx} L ${x0+basePx+length} ${y0} L ${x0+length} ${y0} Z`;
         const poly = svgEl("path");
         poly.setAttribute("d", path);
@@ -358,7 +501,7 @@
         poly.setAttribute("stroke-width","3");
         svg.appendChild(poly);
 
-        const xH = x0-50;
+        const xH = x0-55;
         const v = svgEl("line");
         v.setAttribute("x1",xH); v.setAttribute("y1",y0-heightPx);
         v.setAttribute("x2",xH); v.setAttribute("y2",y0);
@@ -377,13 +520,16 @@
 
         drawRightAngle(svg, xH, y0-12, 12);
 
-        drawLabel(svg, xH-35, y0-heightPx/2+10, `${dim.height}${dim.unit}`, 32);
-        drawLabel(svg, x0+basePx+length-15, y0+35, `${dim.base}${dim.unit}`, 32);
+        drawLabel(svg, xH-65, y0-heightPx/2+10, `高 = ${dim.height}${dim.unit}`, 20);
+        drawLabel(svg, x0+basePx+length-45, y0+35, `底 = ${dim.base}${dim.unit}`, 20);
         return;
       }
 
+      // 三角形(版本1：高垂直落到底)
       if(shape==="triA"){
-        const s=12, basePx=dim.base*s, heightPx=dim.height*s;
+        const s = 10;
+        const basePx = dim.base * s;
+        const heightPx = dim.height * s;
         const A={x:60,y:140}, B={x:60+basePx,y:140}, C={x:60+basePx/2,y:140-heightPx};
 
         const tri = svgEl("path");
@@ -403,11 +549,12 @@
 
         drawRightAngle(svg, C.x-12, A.y-12, 12);
 
-        drawLabel(svg, C.x-55, (C.y+A.y)/2+10, `${dim.height}${dim.unit}`, 32);
-        drawLabel(svg, (A.x+B.x)/2, A.y+35, `${dim.base}${dim.unit}`, 34);
+        drawLabel(svg, C.x-90, (C.y+A.y)/2+10, `高 = ${dim.height}${dim.unit}`, 20);
+        drawLabel(svg, (A.x+B.x)/2, A.y+35, `底 = ${dim.base}${dim.unit}`, 22);
         return;
       }
 
+      // 三角形(版本2：高落在斜邊上，像範例)
       if(shape==="triB"){
         const A={x:80,y:150}, B={x:220,y:150}, C={x:120,y:30};
 
@@ -418,7 +565,10 @@
         tri.setAttribute("stroke-width","3");
         svg.appendChild(tri);
 
-        // 垂足
+        // 讓「底」視覺上對應 AB，但底長度用 dim.base（只做標示）
+        drawLabel(svg, (A.x+B.x)/2, A.y+35, `底 = ${dim.base}${dim.unit}`, 22);
+
+        // 作一條虛線高：從 A 拉到 CB 的垂足
         const vx=B.x-C.x, vy=B.y-C.y;
         const wx=A.x-C.x, wy=A.y-C.y;
         const t=(wx*vx+wy*vy)/(vx*vx+vy*vy);
@@ -434,18 +584,18 @@
 
         drawRightAngle(svg, P.x-10, P.y-10, 10);
 
-        drawLabel(svg, (A.x+B.x)/2, A.y+35, `${dim.base}${dim.unit}`, 34);
-
-        const midCB={x:(C.x+B.x)/2,y:(C.y+B.y)/2};
-        drawLabel(svg, midCB.x+55, midCB.y+10, `${dim.side}${dim.unit}`, 32);
-
         const midAP={x:(A.x+P.x)/2,y:(A.y+P.y)/2};
-        drawLabel(svg, midAP.x-45, midAP.y+10, `${dim.height}${dim.unit}`, 32);
+        drawLabel(svg, midAP.x-80, midAP.y+10, `高 = ${dim.height}${dim.unit}`, 20);
+
+        // 斜邊裝飾數字（不影響答案）
+        const midCB={x:(C.x+B.x)/2,y:(C.y+B.y)/2};
+        drawLabel(svg, midCB.x+95, midCB.y+10, `${dim.side}${dim.unit}`, 20);
         return;
       }
 
+      // 直角三角形
       if(shape==="rightTri"){
-        const s=10;
+        const s = 8;
         const O={x:90,y:150};
         const P={x:O.x+dim.b*s,y:O.y};
         const Q={x:O.x,y:O.y-dim.a*s};
@@ -459,11 +609,12 @@
 
         drawRightAngle(svg, O.x, O.y-12, 12);
 
-        drawLabel(svg, O.x-55, (O.y+Q.y)/2+10, `${dim.a}${dim.unit}`, 32);
-        drawLabel(svg, (O.x+P.x)/2, O.y+35, `${dim.b}${dim.unit}`, 32);
+        drawLabel(svg, O.x-95, (O.y+Q.y)/2+10, `高 = ${dim.a}${dim.unit}`, 18);
+        drawLabel(svg, (O.x+P.x)/2, O.y+35, `底 = ${dim.b}${dim.unit}`, 20);
 
+        // 斜邊顯示 c（裝飾）
         const midQP={x:(Q.x+P.x)/2,y:(Q.y+P.y)/2};
-        drawLabel(svg, midQP.x+40, midQP.y-5, `${dim.c}${dim.unit}`, 32);
+        drawLabel(svg, midQP.x+80, midQP.y-5, `${dim.c}${dim.unit}`, 18);
         return;
       }
     }
@@ -509,7 +660,6 @@
 
         flowers = flowers.filter(f=>{
           f.x -= 5;
-
           if(Math.abs(f.x-runnerX)<30 && Math.abs(f.y-runnerY)<30){
             score += 5;
             return false;
@@ -526,7 +676,7 @@
         if(gameTime >= gameDuration){
           clearInterval(gameInterval);
           currentScreen="question";
-          loadQuestion();
+          loadQuestion(); // ✅ 下一題再隨機
         }
       }, 50);
     }
