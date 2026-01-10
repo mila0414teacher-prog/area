@@ -16,693 +16,362 @@
 <body class="h-full overflow-auto">
   <div id="app" class="w-full h-full"></div>
 
-  <script>
-    // =====================
-    // ✅ localStorage (紀錄)
-    // =====================
-    const STORAGE_KEY = "flower_game_records_v3";
-    function loadRecords() {
-      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
-      catch { return []; }
-    }
-    function saveRecord(record) {
-      const records = loadRecords();
-      records.push(record);
-      records.sort((a,b)=>b.timestamp-a.timestamp);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(records.slice(0, 999)));
-      return records.slice(0, 999);
-    }
+<script>
+/* =========================
+   localStorage 紀錄
+========================= */
+const STORAGE_KEY = "flower_game_records_v4";
+function loadRecords() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
+  catch { return []; }
+}
+function saveRecord(record) {
+  const records = loadRecords();
+  records.push(record);
+  records.sort((a,b)=>b.timestamp-a.timestamp);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(records.slice(0, 999)));
+  return records.slice(0, 999);
+}
 
-    // =====================
-    // ✅ UI 設定
-    // =====================
-    const config = {
-      background_color: "#FFF8DC",
-      surface_color: "#FFFFFF",
-      text_color: "#2C5530",
-      primary_action_color: "#4CAF50",
-      secondary_action_color: "#FF9800",
-      font_family: "sans-serif",
-      font_size: 16,
-      game_title: "🌸 種花高手 🌸",
-      start_button_text: "開始遊戲",
-      records_button_text: "遊戲紀錄"
+/* =========================
+   UI 設定
+========================= */
+const config = {
+  background_color: "#FFF8DC",
+  surface_color: "#FFFFFF",
+  text_color: "#2C5530",
+  primary_action_color: "#4CAF50",
+  secondary_action_color: "#FF9800",
+  font_family: "sans-serif",
+  font_size: 16,
+  game_title: "🌸 種花高手 🌸",
+  start_button_text: "開始遊戲",
+  records_button_text: "遊戲紀錄"
+};
+
+let currentScreen = "home";
+let currentQuestion = null;
+let score = 0;
+let questionsAnswered = 0;
+
+let gameInterval = null;
+let runnerY = 150;
+let runnerX = 50;
+let flowers = [];
+
+/* =========================
+   工具：隨機/格式
+========================= */
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function shuffle(arr){
+  const a = [...arr];
+  for (let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i],a[j]]=[a[j],a[i]];
+  }
+  return a;
+}
+function uniqueNumbers(arr){ return [...new Set(arr)]; }
+function unitSq(unit){ return unit + "²"; }
+
+/* =========================
+   自動產生選項（1正確+3干擾）
+   每個選項「一行寫完算式」
+========================= */
+function buildOptions({ type, base, height, unit, a, b }) {
+  let correctValue = 0;
+  let correctExpr = "";
+
+  if (type === "parallelogram") {
+    correctValue = base * height;
+    correctExpr = `${base} × ${height} = ${correctValue} ${unitSq(unit)}`;
+  } else if (type === "triangle") {
+    correctValue = (base * height) / 2;
+    correctExpr = `${base} × ${height} ÷ 2 = ${correctValue} ${unitSq(unit)}`;
+  } else if (type === "rightTriangle") {
+    correctValue = (a * b) / 2;
+    correctExpr = `${a} × ${b} ÷ 2 = ${correctValue} ${unitSq(unit)}`;
+  }
+
+  const wrongValues = [];
+  if (type === "parallelogram") {
+    wrongValues.push((base * height) / 2);
+    wrongValues.push(base + height);
+    wrongValues.push((base + height) * height);
+  } else if (type === "triangle") {
+    wrongValues.push(base * height);                 // 忘記 ÷2
+    wrongValues.push(base + height);
+    wrongValues.push(((base + height) * height) / 2);
+  } else if (type === "rightTriangle") {
+    wrongValues.push(a * b);
+    wrongValues.push(a + b);
+    wrongValues.push(((a + b) * b) / 2);
+  }
+
+  wrongValues.push(correctValue + randInt(2, 12));
+  wrongValues.push(Math.max(1, correctValue - randInt(2, 12)));
+
+  const cleanedWrong = uniqueNumbers(
+    wrongValues
+      .map(v => Math.round(v*100)/100)
+      .filter(v => v !== correctValue && v > 0)
+  );
+
+  const chosenWrong = cleanedWrong.slice(0, 3);
+  while (chosenWrong.length < 3) {
+    const v = correctValue + randInt(2, 20);
+    if (v !== correctValue && !chosenWrong.includes(v)) chosenWrong.push(v);
+  }
+
+  const wrongExprs = chosenWrong.map((v, idx) => {
+    if (type === "parallelogram") {
+      const forms = [
+        `${base} × ${height} ÷ 2 = ${v} ${unitSq(unit)}`,
+        `${base} + ${height} = ${v} ${unitSq(unit)}`,
+        `(${base} + ${height}) × ${height} = ${v} ${unitSq(unit)}`
+      ];
+      return forms[idx % forms.length];
+    }
+    if (type === "triangle") {
+      const forms = [
+        `${base} × ${height} = ${v} ${unitSq(unit)}`,
+        `${base} + ${height} = ${v} ${unitSq(unit)}`,
+        `(${base} + ${height}) × ${height} ÷ 2 = ${v} ${unitSq(unit)}`
+      ];
+      return forms[idx % forms.length];
+    }
+    // rightTriangle
+    const forms = [
+      `${a} × ${b} = ${v} ${unitSq(unit)}`,
+      `${a} + ${b} = ${v} ${unitSq(unit)}`,
+      `(${a} + ${b}) × ${b} ÷ 2 = ${v} ${unitSq(unit)}`
+    ];
+    return forms[idx % forms.length];
+  });
+
+  const all = shuffle([correctExpr, ...wrongExprs]);
+  return { options: all, correctIndex: all.indexOf(correctExpr) };
+}
+
+/* =========================
+   題型：照你範例的三種圖
+   1) triA：底+高（高垂直到底）
+   2) triB：底+高落在斜邊上（像 6cm/5cm/8cm）
+   3) rightTri：直角三角形（像 12/5/13）
+========================= */
+function generateQuestion() {
+  const pool = ["triA", "triB", "rightTri"];
+  const shape = pool[randInt(0, pool.length - 1)];
+  const unit = "cm";
+
+  if (shape === "triA") {
+    let base = randInt(10, 20);
+    let height = randInt(6, 12);
+    if ((base * height) % 2 !== 0) base += 1; // 面積整數
+    const { options, correctIndex } = buildOptions({ type:"triangle", base, height, unit });
+    return {
+      shape,
+      text: "三角形（如圖）：求面積",
+      dimensions: { base, height, unit },
+      options,
+      correct: correctIndex
     };
+  }
 
-    let currentScreen = "home";
-    let currentQuestion = null;
-    let score = 0;
-    let questionsAnswered = 0;
+  if (shape === "triB") {
+    let base = randInt(6, 14);
+    let height = randInt(4, 10);
+    if ((base * height) % 2 !== 0) height += 1;
+    const side = randInt(Math.max(base, height) + 1, Math.max(base, height) + 6); // 裝飾用
+    const { options, correctIndex } = buildOptions({ type:"triangle", base, height, unit });
+    return {
+      shape,
+      text: "三角形（如圖）：求面積",
+      dimensions: { base, height, side, unit },
+      options,
+      correct: correctIndex
+    };
+  }
 
-    let gameInterval = null;
-    let runnerY = 150;
-    let runnerX = 50;
-    let flowers = [];
+  // rightTri
+  let a = randInt(8, 16);
+  let b = randInt(4, 10);
+  if ((a * b) % 2 !== 0) a += 1;
 
-    // =====================
-    // ✅ 工具：隨機/格式
-    // =====================
-    function randInt(min, max) {
-      return Math.floor(Math.random() * (max - min + 1)) + min;
-    }
-    function shuffle(arr){
-      const a = [...arr];
-      for (let i=a.length-1;i>0;i--){
-        const j = Math.floor(Math.random()*(i+1));
-        [a[i],a[j]]=[a[j],a[i]];
-      }
-      return a;
-    }
-    function uniqueNumbers(arr){
-      return [...new Set(arr)];
-    }
-    function unitSq(unit){ return unit + "²"; }
+  // 讓 c 比較像範例：用 sqrt 後取整顯示（裝飾）
+  const c = Math.round(Math.sqrt(a*a + b*b));
+  const { options, correctIndex } = buildOptions({ type:"rightTriangle", a, b, unit });
+  return {
+    shape,
+    text: "直角三角形（如圖）：求面積",
+    dimensions: { a, b, c, unit },
+    options,
+    correct: correctIndex
+  };
+}
 
-    // =====================
-    // ✅ 自動產生選項（1正確 + 3干擾）
-    // 每個選項一行寫完算式
-    // =====================
-    function buildOptions({ type, base, height, unit, a, b }) {
-      // 回傳 { options: [string...], correctIndex }
-      // type: "parallelogram" | "triangle" | "rightTriangle"
-      // parallelogram: base,height
-      // triangle: base,height
-      // rightTriangle: a,b (兩直角邊) => base=b height=a (概念上)
+/* =========================
+   Render
+========================= */
+function render() {
+  const app = document.getElementById("app");
+  const baseSize = config.font_size;
+  const bgColor = config.background_color;
+  const surfaceColor = config.surface_color;
+  const textColor = config.text_color;
+  const primaryColor = config.primary_action_color;
+  const secondaryColor = config.secondary_action_color;
 
-      let correctValue = 0;
-      let correctExpr = "";
+  app.style.backgroundColor = bgColor;
+  app.style.fontFamily = `${config.font_family}, Arial, sans-serif`;
+  app.style.color = textColor;
 
-      if (type === "parallelogram") {
-        correctValue = base * height;
-        correctExpr = `${base} × ${height} = ${correctValue} ${unitSq(unit)}`;
-      } else if (type === "triangle") {
-        correctValue = (base * height) / 2;
-        correctExpr = `${base} × ${height} ÷ 2 = ${correctValue} ${unitSq(unit)}`;
-      } else if (type === "rightTriangle") {
-        correctValue = (a * b) / 2;
-        correctExpr = `${a} × ${b} ÷ 2 = ${correctValue} ${unitSq(unit)}`;
-      } else {
-        correctValue = base * height;
-        correctExpr = `${base} × ${height} = ${correctValue} ${unitSq(unit)}`;
-      }
+  if (currentScreen === "home") {
+    app.innerHTML = `
+      <div class="flex flex-col items-center justify-center h-full px-4 py-10">
+        <h1 class="font-bold mb-8 text-center" style="font-size:${baseSize*2.5}px;color:${textColor};">
+          ${config.game_title}
+        </h1>
+        <div class="flower-icon mb-12 text-8xl">🌺🌻🌷</div>
 
-      // 干擾值（常見錯誤）
-      const wrongValues = [];
-      if (type === "parallelogram") {
-        wrongValues.push((base * height) / 2);      // 多除2
-        wrongValues.push(base + height);            // 加法
-        wrongValues.push((base + height) * height); // 亂用（上底+下底）×高
-      } else if (type === "triangle" || type === "rightTriangle") {
-        // 忘記 ÷2
-        const prod = (type === "rightTriangle") ? (a*b) : (base*height);
-        wrongValues.push(prod);
-        wrongValues.push(base + height);                // 加法（或 a+b）
-        wrongValues.push(((base + height) * height) / 2); // 亂用梯形
-        if (type === "rightTriangle") {
-          wrongValues[1] = a + b;
-          wrongValues[2] = ((a + b) * b) / 2;
-        }
-      }
+        <button id="startBtn"
+          class="px-8 py-4 rounded-lg font-bold shadow-lg hover:opacity-90 transition mb-4"
+          style="background:${primaryColor};color:#fff;font-size:${baseSize*1.2}px;">
+          ${config.start_button_text}
+        </button>
 
-      // 再補一些微調干擾，確保夠用且不同
-      wrongValues.push(correctValue + randInt(1, 6) * 2);
-      wrongValues.push(Math.max(1, correctValue - randInt(1, 6) * 2));
+        <button id="recordsBtn"
+          class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition"
+          style="background:${secondaryColor};color:#fff;font-size:${baseSize}px;">
+          ${config.records_button_text}
+        </button>
+      </div>
+    `;
+    document.getElementById("startBtn").onclick = startGame;
+    document.getElementById("recordsBtn").onclick = showRecords;
+    return;
+  }
 
-      // 去重、去掉正確
-      const cleanedWrong = uniqueNumbers(
-        wrongValues
-          .map(v => (Number.isFinite(v) ? Math.round(v*100)/100 : v))
-          .filter(v => v !== correctValue && v > 0)
-      );
-
-      // 取前三個干擾
-      const chosenWrong = cleanedWrong.slice(0, 3);
-
-      // 若不足三個，再補一些「看起來合理」的數
-      while (chosenWrong.length < 3) {
-        const v = correctValue + randInt(2, 20);
-        if (v !== correctValue && !chosenWrong.includes(v)) chosenWrong.push(v);
-      }
-
-      // 把干擾值轉成一行算式（保持同一種格式）
-      const wrongExprs = chosenWrong.map(v => {
-        if (type === "parallelogram") {
-          // 常見干擾形式混搭
-          const forms = [
-            `${base} × ${height} ÷ 2 = ${v} ${unitSq(unit)}`,
-            `${base} + ${height} = ${v} ${unitSq(unit)}`,
-            `(${base} + ${height}) × ${height} = ${v} ${unitSq(unit)}`
-          ];
-          return forms[chosenWrong.indexOf(v) % forms.length];
-        }
-        if (type === "triangle") {
-          const forms = [
-            `${base} × ${height} = ${v} ${unitSq(unit)}`,
-            `${base} + ${height} = ${v} ${unitSq(unit)}`,
-            `(${base} + ${height}) × ${height} ÷ 2 = ${v} ${unitSq(unit)}`
-          ];
-          return forms[chosenWrong.indexOf(v) % forms.length];
-        }
-        // rightTriangle
-        const forms = [
-          `${a} × ${b} = ${v} ${unitSq(unit)}`,
-          `${a} + ${b} = ${v} ${unitSq(unit)}`,
-          `(${a} + ${b}) × ${b} ÷ 2 = ${v} ${unitSq(unit)}`
-        ];
-        return forms[chosenWrong.indexOf(v) % forms.length];
-      });
-
-      // 合併後洗牌，找正確位置
-      const all = shuffle([correctExpr, ...wrongExprs]);
-      return { options: all, correctIndex: all.indexOf(correctExpr) };
-    }
-
-    // =====================
-    // ✅ 出題器：隨機底高、隨機題型
-    // - 三角形確保 base*height 是偶數，面積整數
-    // =====================
-    function generateQuestion() {
-      const pool = ["paraA", "paraB", "triA", "triB", "rightTri"];
-      const shape = pool[randInt(0, pool.length - 1)];
-
-      // 單位：cm / m（可依你需求固定）
-      const unit = (shape === "paraB") ? "m" : "cm";
-
-      if (shape === "paraA") {
-        const base = randInt(6, 18);
-        const height = randInt(4, 14);
-        const { options, correctIndex } = buildOptions({ type:"parallelogram", base, height, unit });
-        return {
-          shape,
-          text: "平行四邊形（如圖）：求面積",
-          dimensions: { base, height, unit },
-          options,
-          correct: correctIndex
-        };
-      }
-
-      if (shape === "paraB") {
-        const base = randInt(6, 20);
-        const height = randInt(10, 30);
-        const { options, correctIndex } = buildOptions({ type:"parallelogram", base, height, unit });
-        return {
-          shape,
-          text: "平行四邊形（如圖）：求面積",
-          dimensions: { base, height, unit },
-          options,
-          correct: correctIndex
-        };
-      }
-
-      if (shape === "triA") {
-        let base = randInt(6, 20);
-        let height = randInt(4, 18);
-        // 確保 base*height 偶數
-        if ((base * height) % 2 !== 0) base += 1;
-        const { options, correctIndex } = buildOptions({ type:"triangle", base, height, unit });
-        return {
-          shape,
-          text: "三角形（如圖）：求面積",
-          dimensions: { base, height, unit },
-          options,
-          correct: correctIndex
-        };
-      }
-
-      if (shape === "triB") {
-        let base = randInt(6, 16);
-        let height = randInt(4, 14);
-        if ((base * height) % 2 !== 0) height += 1;
-        const side = randInt(7, 18); // 只是裝飾用（像範例 8cm）
-        const { options, correctIndex } = buildOptions({ type:"triangle", base, height, unit });
-        return {
-          shape,
-          text: "三角形（如圖）：求面積",
-          dimensions: { base, height, side, unit },
-          options,
-          correct: correctIndex
-        };
-      }
-
-      // rightTri
-      let a = randInt(6, 20);
-      let b = randInt(4, 16);
-      if ((a * b) % 2 !== 0) a += 1;
-      const c = Math.round(Math.sqrt(a*a + b*b)); // 裝飾顯示（不強求畢氏整數）
-      const { options, correctIndex } = buildOptions({ type:"rightTriangle", a, b, unit, base:b, height:a });
-      return {
-        shape,
-        text: "直角三角形（如圖）：求面積",
-        dimensions: { a, b, c, unit },
-        options,
-        correct: correctIndex
-      };
-    }
-
-    // =====================
-    // ✅ UI render
-    // =====================
-    function render() {
-      const app = document.getElementById("app");
-      const baseSize = config.font_size;
-      const bgColor = config.background_color;
-      const surfaceColor = config.surface_color;
-      const textColor = config.text_color;
-      const primaryColor = config.primary_action_color;
-      const secondaryColor = config.secondary_action_color;
-
-      app.style.backgroundColor = bgColor;
-      app.style.fontFamily = `${config.font_family}, Arial, sans-serif`;
-      app.style.color = textColor;
-
-      if (currentScreen === "home") {
-        app.innerHTML = `
-          <div class="flex flex-col items-center justify-center h-full px-4 py-10">
-            <h1 class="font-bold mb-8 text-center" style="font-size:${baseSize*2.5}px;color:${textColor};">
-              ${config.game_title}
-            </h1>
-            <div class="flower-icon mb-12 text-8xl">🌺🌻🌷</div>
-
-            <button id="startBtn"
-              class="px-8 py-4 rounded-lg font-bold shadow-lg hover:opacity-90 transition mb-4"
-              style="background:${primaryColor};color:#fff;font-size:${baseSize*1.2}px;">
-              ${config.start_button_text}
-            </button>
-
-            <button id="recordsBtn"
-              class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition"
-              style="background:${secondaryColor};color:#fff;font-size:${baseSize}px;">
-              ${config.records_button_text}
-            </button>
+  if (currentScreen === "question") {
+    app.innerHTML = `
+      <div class="flex flex-col items-center justify-center h-full px-4 py-10">
+        <div class="rounded-lg shadow-xl p-8 max-w-3xl w-full" style="background:${surfaceColor};">
+          <div class="mb-6 flex justify-between items-center">
+            <span style="font-size:${baseSize*1.1}px;">得分: ${score}</span>
+            <span style="font-size:${baseSize*1.1}px;">第 ${questionsAnswered + 1} 題</span>
           </div>
-        `;
-        document.getElementById("startBtn").onclick = startGame;
-        document.getElementById("recordsBtn").onclick = showRecords;
-        return;
-      }
 
-      if (currentScreen === "question") {
-        app.innerHTML = `
-          <div class="flex flex-col items-center justify-center h-full px-4 py-10">
-            <div class="rounded-lg shadow-xl p-8 max-w-3xl w-full" style="background:${surfaceColor};">
-              <div class="mb-6 flex justify-between items-center">
-                <span style="font-size:${baseSize*1.1}px;">得分: ${score}</span>
-                <span style="font-size:${baseSize*1.1}px;">第 ${questionsAnswered + 1} 題</span>
-              </div>
+          <div class="mb-6 flex justify-center">
+            <!-- 更像範例：框大、留白多 -->
+            <svg id="questionShape"
+                 width="560" height="320" viewBox="0 0 360 220"
+                 style="background:#fff;border-radius:14px;padding:10px;"></svg>
+          </div>
 
-              <div class="mb-6 flex justify-center">
-                <svg id="questionShape"
-                     width="520" height="260" viewBox="0 0 360 180"
-                     style="background:${bgColor};border-radius:16px;padding:12px;"></svg>
-              </div>
+          <h2 class="font-bold mb-6" style="font-size:${baseSize*1.4}px;">
+            ${currentQuestion.text}
+          </h2>
 
-              <h2 class="font-bold mb-6" style="font-size:${baseSize*1.4}px;">
-                ${currentQuestion.text}
-              </h2>
+          <div class="space-y-3">
+            ${currentQuestion.options.map((opt,i)=>`
+              <button class="option-btn w-full text-left px-6 py-4 rounded-lg font-semibold transition hover:opacity-80"
+                data-index="${i}" style="background:${primaryColor};color:#fff;font-size:${baseSize}px;">
+                ${opt}
+              </button>
+            `).join("")}
+          </div>
+        </div>
+      </div>
+    `;
 
+    drawShape("questionShape", currentQuestion.shape, currentQuestion.dimensions);
+    document.querySelectorAll(".option-btn").forEach(btn=>{
+      btn.onclick = ()=>checkAnswer(parseInt(btn.dataset.index,10));
+    });
+    return;
+  }
+
+  if (currentScreen === "runner") {
+    app.innerHTML = `
+      <div class="flex flex-col items-center justify-center h-full px-4 py-10">
+        <div class="mb-4" style="font-size:${baseSize*1.2}px;">
+          收集花朵！得分: ${score}
+        </div>
+
+        <div class="relative">
+          <canvas id="gameCanvas" width="600" height="300" style="border-color:${primaryColor};"></canvas>
+          <div class="mt-4">
+            <label style="font-size:${baseSize}px;">控制上下：</label>
+            <input type="range" id="slider" min="0" max="250" value="150"
+                   style="width:300px;accent-color:${primaryColor};" class="ml-2">
+          </div>
+        </div>
+      </div>
+    `;
+    startRunnerGame();
+    return;
+  }
+
+  if (currentScreen === "records") {
+    const records = loadRecords();
+    app.innerHTML = `
+      <div class="flex flex-col h-full px-4 py-8">
+        <div class="max-w-2xl w-full mx-auto">
+          <h2 class="font-bold mb-6 text-center" style="font-size:${baseSize*2}px;">遊戲紀錄</h2>
+
+          <div class="rounded-lg shadow-xl p-6 mb-6" style="background:${surfaceColor};">
+            ${records.length===0 ? `
+              <p class="text-center" style="font-size:${baseSize}px;">還沒有紀錄，快去玩遊戲吧！</p>
+            ` : `
               <div class="space-y-3">
-                ${currentQuestion.options.map((opt,i)=>`
-                  <button class="option-btn w-full text-left px-6 py-4 rounded-lg font-semibold transition hover:opacity-80"
-                    data-index="${i}" style="background:${primaryColor};color:#fff;font-size:${baseSize}px;">
-                    ${opt}
-                  </button>
+                ${records.map((r,idx)=>`
+                  <div class="p-4 rounded-lg border-2" style="background:${config.background_color};border-color:${primaryColor};">
+                    <div class="flex justify-between items-center">
+                      <span class="font-bold" style="font-size:${baseSize}px;">第 ${idx+1} 名</span>
+                      <span class="font-bold" style="font-size:${baseSize*1.2}px;color:${primaryColor};">${r.score} 分</span>
+                    </div>
+                    <div class="mt-2 opacity-75" style="font-size:${baseSize*0.85}px;">
+                      答對 ${r.questionsAnswered} 題 | ${new Date(r.timestamp).toLocaleString('zh-TW')}
+                    </div>
+                  </div>
                 `).join("")}
               </div>
-            </div>
+            `}
           </div>
-        `;
 
-        drawShape("questionShape", currentQuestion.shape, currentQuestion.dimensions, primaryColor);
+          <div class="grid grid-cols-2 gap-3">
+            <button id="backBtn" class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition"
+              style="background:${config.secondary_action_color};color:#fff;font-size:${baseSize}px;">返回主畫面</button>
 
-        document.querySelectorAll(".option-btn").forEach(btn=>{
-          btn.onclick = ()=>checkAnswer(parseInt(btn.dataset.index,10));
-        });
-        return;
-      }
-
-      if (currentScreen === "runner") {
-        app.innerHTML = `
-          <div class="flex flex-col items-center justify-center h-full px-4 py-10">
-            <div class="mb-4" style="font-size:${baseSize*1.2}px;">
-              收集花朵！得分: ${score}
-            </div>
-
-            <div class="relative">
-              <canvas id="gameCanvas" width="600" height="300" style="border-color:${primaryColor};"></canvas>
-              <div class="mt-4">
-                <label style="font-size:${baseSize}px;">控制上下：</label>
-                <input type="range" id="slider" min="0" max="250" value="150"
-                       style="width:300px;accent-color:${primaryColor};" class="ml-2">
-              </div>
-            </div>
+            <button id="clearBtn" class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition"
+              style="background:${config.primary_action_color};color:#fff;font-size:${baseSize}px;">清空紀錄</button>
           </div>
-        `;
-        startRunnerGame();
-        return;
-      }
+        </div>
+      </div>
+    `;
+    document.getElementById("backBtn").onclick = ()=>{ currentScreen="home"; render(); };
+    document.getElementById("clearBtn").onclick = ()=>{ localStorage.removeItem(STORAGE_KEY); render(); };
+    return;
+  }
+}
 
-      if (currentScreen === "records") {
-        const records = loadRecords();
-        app.innerHTML = `
-          <div class="flex flex-col h-full px-4 py-8">
-            <div class="max-w-2xl w-full mx-auto">
-              <h2 class="font-bold mb-6 text-center" style="font-size:${baseSize*2}px;">遊戲紀錄</h2>
+function startGame(){
+  score = 0;
+  questionsAnswered = 0;
+  currentScreen = "question";
+  loadQuestion();
+}
+function loadQuestion(){
+  currentQuestion = generateQuestion(); // ✅ 每次隨機
+  render();
+}
 
-              <div class="rounded-lg shadow-xl p-6 mb-6" style="background:${surfaceColor};">
-                ${records.length===0 ? `
-                  <p class="text-center" style="font-size:${baseSize}px;">還沒有紀錄，快去玩遊戲吧！</p>
-                ` : `
-                  <div class="space-y-3">
-                    ${records.map((r,idx)=>`
-                      <div class="p-4 rounded-lg border-2" style="background:${config.background_color};border-color:${primaryColor};">
-                        <div class="flex justify-between items-center">
-                          <span class="font-bold" style="font-size:${baseSize}px;">第 ${idx+1} 名</span>
-                          <span class="font-bold" style="font-size:${baseSize*1.2}px;color:${primaryColor};">${r.score} 分</span>
-                        </div>
-                        <div class="mt-2 opacity-75" style="font-size:${baseSize*0.85}px;">
-                          答對 ${r.questionsAnswered} 題 | ${new Date(r.timestamp).toLocaleString('zh-TW')}
-                        </div>
-                      </div>
-                    `).join("")}
-                  </div>
-                `}
-              </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                <button id="backBtn" class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition"
-                  style="background:${secondaryColor};color:#fff;font-size:${baseSize}px;">返回主畫面</button>
-
-                <button id="clearBtn" class="px-6 py-3 rounded-lg font-bold shadow-lg hover:opacity-90 transition"
-                  style="background:${primaryColor};color:#fff;font-size:${baseSize}px;">清空紀錄</button>
-              </div>
-            </div>
-          </div>
-        `;
-        document.getElementById("backBtn").onclick = ()=>{ currentScreen="home"; render(); };
-        document.getElementById("clearBtn").onclick = ()=>{
-          localStorage.removeItem(STORAGE_KEY);
-          render();
-        };
-        return;
-      }
-    }
-
-    function startGame(){
-      score = 0;
-      questionsAnswered = 0;
-      currentScreen = "question";
-      loadQuestion();
-    }
-
-    function loadQuestion(){
-      currentQuestion = generateQuestion(); // ✅ 每次都重新隨機出題
-      render();
-    }
-
-    // =====================
-    // ✅ SVG 繪圖：圖上寫「底=」「高=」
-    // =====================
-    function svgEl(tag){ return document.createElementNS("http://www.w3.org/2000/svg", tag); }
-
-    function drawRightAngle(svg, x, y, size=10){
-      const p = svgEl("path");
-      p.setAttribute("d", `M ${x} ${y} l ${size} 0 l 0 ${size} l ${-size} 0 Z`);
-      p.setAttribute("fill","none");
-      p.setAttribute("stroke","#000");
-      p.setAttribute("stroke-width","2");
-      svg.appendChild(p);
-    }
-
-    function drawLabel(svg, x, y, text, size=22){
-      const t = svgEl("text");
-      t.setAttribute("x", x);
-      t.setAttribute("y", y);
-      t.setAttribute("fill","#000");
-      t.setAttribute("font-size", size);
-      t.setAttribute("font-weight","800");
-      t.setAttribute("text-anchor","middle");
-      t.textContent = text;
-      svg.appendChild(t);
-    }
-
-    function drawShape(svgId, shape, dim, color){
-      const svg = document.getElementById(svgId);
-      if(!svg) return;
-      svg.innerHTML = "";
-
-      const fillGreen = color + "33";
-      const fillBeige = "#f5d9b3";
-      const fillBlue  = "#cfe9f7";
-
-      // 平行四邊形(版本1)
-      if(shape==="paraA"){
-        const s = 9;
-        const basePx = dim.base * s;
-        const heightPx = dim.height * s;
-        const slant = 40;
-
-        const path = `M 70 ${135-heightPx} L ${70+slant+basePx} ${135-heightPx} L ${70+basePx} 135 L ${70-slant} 135 Z`;
-        const poly = svgEl("path");
-        poly.setAttribute("d", path);
-        poly.setAttribute("fill", fillGreen);
-        poly.setAttribute("stroke","#000");
-        poly.setAttribute("stroke-width","3");
-        svg.appendChild(poly);
-
-        const hx = 70 + basePx/2;
-        const hLine = svgEl("line");
-        hLine.setAttribute("x1",hx); hLine.setAttribute("y1",135-heightPx);
-        hLine.setAttribute("x2",hx); hLine.setAttribute("y2",135);
-        hLine.setAttribute("stroke","#000");
-        hLine.setAttribute("stroke-width","3");
-        hLine.setAttribute("stroke-dasharray","6,6");
-        svg.appendChild(hLine);
-
-        drawRightAngle(svg, hx-12, 135-heightPx+2, 12);
-        drawRightAngle(svg, hx-12, 135-12, 12);
-
-        drawLabel(svg, hx-80, 92, `高 = ${dim.height}${dim.unit}`, 22);
-        drawLabel(svg, 70+basePx/2, 173, `底 = ${dim.base}${dim.unit}`, 22);
-        return;
-      }
-
-      // 平行四邊形(版本2：長斜條)
-      if(shape==="paraB"){
-        const s = 6;
-        const basePx = dim.base * s;
-        const heightPx = dim.height * s;
-        const x0 = 110, y0 = 135, length = 220;
-
-        const path = `M ${x0} ${y0-heightPx} L ${x0+basePx} ${y0-heightPx} L ${x0+basePx+length} ${y0} L ${x0+length} ${y0} Z`;
-        const poly = svgEl("path");
-        poly.setAttribute("d", path);
-        poly.setAttribute("fill", fillGreen);
-        poly.setAttribute("stroke","#000");
-        poly.setAttribute("stroke-width","3");
-        svg.appendChild(poly);
-
-        const xH = x0-55;
-        const v = svgEl("line");
-        v.setAttribute("x1",xH); v.setAttribute("y1",y0-heightPx);
-        v.setAttribute("x2",xH); v.setAttribute("y2",y0);
-        v.setAttribute("stroke","#000");
-        v.setAttribute("stroke-width","3");
-        v.setAttribute("stroke-dasharray","6,6");
-        svg.appendChild(v);
-
-        const h = svgEl("line");
-        h.setAttribute("x1",xH); h.setAttribute("y1",y0);
-        h.setAttribute("x2",x0+length); h.setAttribute("y2",y0);
-        h.setAttribute("stroke","#000");
-        h.setAttribute("stroke-width","3");
-        h.setAttribute("stroke-dasharray","6,6");
-        svg.appendChild(h);
-
-        drawRightAngle(svg, xH, y0-12, 12);
-
-        drawLabel(svg, xH-65, y0-heightPx/2+10, `高 = ${dim.height}${dim.unit}`, 20);
-        drawLabel(svg, x0+basePx+length-45, y0+35, `底 = ${dim.base}${dim.unit}`, 20);
-        return;
-      }
-
-      // 三角形(版本1：高垂直落到底)
-      if(shape==="triA"){
-        const s = 10;
-        const basePx = dim.base * s;
-        const heightPx = dim.height * s;
-        const A={x:60,y:140}, B={x:60+basePx,y:140}, C={x:60+basePx/2,y:140-heightPx};
-
-        const tri = svgEl("path");
-        tri.setAttribute("d", `M ${A.x} ${A.y} L ${C.x} ${C.y} L ${B.x} ${B.y} Z`);
-        tri.setAttribute("fill", fillBeige);
-        tri.setAttribute("stroke","#000");
-        tri.setAttribute("stroke-width","3");
-        svg.appendChild(tri);
-
-        const alt = svgEl("line");
-        alt.setAttribute("x1",C.x); alt.setAttribute("y1",C.y);
-        alt.setAttribute("x2",C.x); alt.setAttribute("y2",A.y);
-        alt.setAttribute("stroke","#000");
-        alt.setAttribute("stroke-width","3");
-        alt.setAttribute("stroke-dasharray","6,6");
-        svg.appendChild(alt);
-
-        drawRightAngle(svg, C.x-12, A.y-12, 12);
-
-        drawLabel(svg, C.x-90, (C.y+A.y)/2+10, `高 = ${dim.height}${dim.unit}`, 20);
-        drawLabel(svg, (A.x+B.x)/2, A.y+35, `底 = ${dim.base}${dim.unit}`, 22);
-        return;
-      }
-
-      // 三角形(版本2：高落在斜邊上，像範例)
-      if(shape==="triB"){
-        const A={x:80,y:150}, B={x:220,y:150}, C={x:120,y:30};
-
-        const tri = svgEl("path");
-        tri.setAttribute("d", `M ${A.x} ${A.y} L ${C.x} ${C.y} L ${B.x} ${B.y} Z`);
-        tri.setAttribute("fill", fillGreen);
-        tri.setAttribute("stroke","#000");
-        tri.setAttribute("stroke-width","3");
-        svg.appendChild(tri);
-
-        // 讓「底」視覺上對應 AB，但底長度用 dim.base（只做標示）
-        drawLabel(svg, (A.x+B.x)/2, A.y+35, `底 = ${dim.base}${dim.unit}`, 22);
-
-        // 作一條虛線高：從 A 拉到 CB 的垂足
-        const vx=B.x-C.x, vy=B.y-C.y;
-        const wx=A.x-C.x, wy=A.y-C.y;
-        const t=(wx*vx+wy*vy)/(vx*vx+vy*vy);
-        const P={x:C.x+t*vx, y:C.y+t*vy};
-
-        const alt = svgEl("line");
-        alt.setAttribute("x1",A.x); alt.setAttribute("y1",A.y);
-        alt.setAttribute("x2",P.x); alt.setAttribute("y2",P.y);
-        alt.setAttribute("stroke","#000");
-        alt.setAttribute("stroke-width","3");
-        alt.setAttribute("stroke-dasharray","6,6");
-        svg.appendChild(alt);
-
-        drawRightAngle(svg, P.x-10, P.y-10, 10);
-
-        const midAP={x:(A.x+P.x)/2,y:(A.y+P.y)/2};
-        drawLabel(svg, midAP.x-80, midAP.y+10, `高 = ${dim.height}${dim.unit}`, 20);
-
-        // 斜邊裝飾數字（不影響答案）
-        const midCB={x:(C.x+B.x)/2,y:(C.y+B.y)/2};
-        drawLabel(svg, midCB.x+95, midCB.y+10, `${dim.side}${dim.unit}`, 20);
-        return;
-      }
-
-      // 直角三角形
-      if(shape==="rightTri"){
-        const s = 8;
-        const O={x:90,y:150};
-        const P={x:O.x+dim.b*s,y:O.y};
-        const Q={x:O.x,y:O.y-dim.a*s};
-
-        const tri = svgEl("path");
-        tri.setAttribute("d", `M ${Q.x} ${Q.y} L ${O.x} ${O.y} L ${P.x} ${P.y} Z`);
-        tri.setAttribute("fill", fillBlue);
-        tri.setAttribute("stroke","#000");
-        tri.setAttribute("stroke-width","3");
-        svg.appendChild(tri);
-
-        drawRightAngle(svg, O.x, O.y-12, 12);
-
-        drawLabel(svg, O.x-95, (O.y+Q.y)/2+10, `高 = ${dim.a}${dim.unit}`, 18);
-        drawLabel(svg, (O.x+P.x)/2, O.y+35, `底 = ${dim.b}${dim.unit}`, 20);
-
-        // 斜邊顯示 c（裝飾）
-        const midQP={x:(Q.x+P.x)/2,y:(Q.y+P.y)/2};
-        drawLabel(svg, midQP.x+80, midQP.y-5, `${dim.c}${dim.unit}`, 18);
-        return;
-      }
-    }
-
-    // =====================
-    // ✅ 遊戲流程
-    // =====================
-    function checkAnswer(selectedIndex){
-      if(selectedIndex===currentQuestion.correct){
-        score += 10;
-        questionsAnswered += 1;
-        currentScreen = "runner";
-        render();
-      } else {
-        endGame();
-      }
-    }
-
-    function startRunnerGame(){
-      const canvas = document.getElementById("gameCanvas");
-      const ctx = canvas.getContext("2d");
-      const slider = document.getElementById("slider");
-
-      runnerY = 150;
-      flowers = [];
-      let gameTime = 0;
-      const gameDuration = 5000;
-
-      slider.oninput = (e)=> runnerY = parseInt(e.target.value,10);
-
-      function spawnFlower(){
-        flowers.push({ x: canvas.width, y: Math.random()*(canvas.height-30), collected:false });
-      }
-      spawnFlower();
-
-      gameInterval = setInterval(()=>{
-        gameTime += 50;
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-
-        ctx.fillStyle = config.text_color;
-        ctx.font = "30px Arial";
-        ctx.fillText("🏃", runnerX, runnerY);
-
-        flowers = flowers.filter(f=>{
-          f.x -= 5;
-          if(Math.abs(f.x-runnerX)<30 && Math.abs(f.y-runnerY)<30){
-            score += 5;
-            return false;
-          }
-          if(f.x > -30){
-            ctx.fillText("🌸", f.x, f.y);
-            return true;
-          }
-          return false;
-        });
-
-        if(Math.random()<0.03) spawnFlower();
-
-        if(gameTime >= gameDuration){
-          clearInterval(gameInterval);
-          currentScreen="question";
-          loadQuestion(); // ✅ 下一題再隨機
-        }
-      }, 50);
-    }
-
-    function endGame(){
-      if(gameInterval) clearInterval(gameInterval);
-
-      const record = {
-        id: Date.now().toString(),
-        score,
-        timestamp: Date.now(),
-        questionsAnswered
-      };
-      saveRecord(record);
-      currentScreen = "records";
-      render();
-    }
-
-    function showRecords(){
-      currentScreen="records";
-      render();
-    }
-
-    // start
-    currentScreen="home";
-    render();
-  </script>
-</body>
-</html>
+/* =========================
+   SVG 繪圖：做成「像範例的弧形標示」
+========================= */
+function svgEl(tag){ return document.createElementNS("http://www.w3.org/2000/svg", tag); }
+function setAttrs(el, attrs){
+  for(const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+function
